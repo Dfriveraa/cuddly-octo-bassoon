@@ -1,7 +1,7 @@
 package repository
 
 import (
-	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -12,169 +12,210 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestUserRepository_Integration(t *testing.T) {
-	// Asegurarse de que la tabla de usuarios esté limpia
-	testDB.Exec("TRUNCATE TABLE users RESTART IDENTITY CASCADE")
+// generateUniqueUserData genera datos únicos para cada test de usuario
+func generateUniqueUserData(testName string, index int) (string, string) {
+	timestamp := time.Now().UnixNano()
+	username := fmt.Sprintf("user-%s-%d-%d", testName, index, timestamp)
+	email := fmt.Sprintf("%s-%d-%d@example.com", testName, index, timestamp)
+	return username, email
+}
 
-	// Configurar el repositorio de usuarios
-	repo := NewUserRepository(testDB)
-	ctx := context.Background()
+func TestUserRepository_CreateUser_GetByID(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
 
-	t.Run("CreateUser and GetByID", func(t *testing.T) {
-		// Arrange
-		user := &model.User{
-			Username:  "testuser",
-			Email:     "test@example.com",
-			Password:  "password123",
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-		}
+	repo := NewUserRepository(tx)
+	username, email := generateUniqueUserData("create-get", 1)
 
-		// Act
-		err := repo.CreateUser(user)
-		assert.NoError(t, err)
-		assert.NotZero(t, user.ID, "El ID de usuario debería haber sido generado")
+	user := &model.User{
+		Username:  username,
+		Email:     email,
+		Password:  "password123",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
 
-		// Retrieve the user by ID
-		retrievedUser, err := repo.GetByID(ctx, user.ID)
+	// Act
+	err := repo.CreateUser(user)
+	assert.NoError(t, err)
+	assert.NotZero(t, user.ID, "El ID de usuario debería haber sido generado")
 
-		// Assert
-		assert.NoError(t, err)
-		assert.NotNil(t, retrievedUser)
-		assert.Equal(t, user.ID, retrievedUser.ID)
-		assert.Equal(t, user.Username, retrievedUser.Username)
-		assert.Equal(t, user.Email, retrievedUser.Email)
-		assert.Equal(t, user.Password, retrievedUser.Password)
-	})
+	// Retrieve the user by ID
+	retrievedUser, err := repo.GetByID(ctx, user.ID)
 
-	t.Run("GetByUsername", func(t *testing.T) {
-		// Arrange
-		testDB.Exec("TRUNCATE TABLE users RESTART IDENTITY CASCADE")
-		username := "usernametest"
-		user := &model.User{
-			Username:  username,
-			Email:     "username@example.com",
-			Password:  "password123",
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-		}
+	// Assert
+	assert.NoError(t, err)
+	assert.NotNil(t, retrievedUser)
+	assert.Equal(t, user.ID, retrievedUser.ID)
+	assert.Equal(t, user.Username, retrievedUser.Username)
+	assert.Equal(t, user.Email, retrievedUser.Email)
+	assert.Equal(t, user.Password, retrievedUser.Password)
+}
 
-		err := repo.CreateUser(user)
-		require.NoError(t, err)
+func TestUserRepository_GetByUsername(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
 
-		// Act
-		retrievedUser, err := repo.GetByUsername(ctx, username)
+	repo := NewUserRepository(tx)
+	username, email := generateUniqueUserData("get-username", 1)
 
-		// Assert
-		assert.NoError(t, err)
-		assert.NotNil(t, retrievedUser)
-		assert.Equal(t, user.ID, retrievedUser.ID)
-		assert.Equal(t, username, retrievedUser.Username)
-	})
+	user := &model.User{
+		Username:  username,
+		Email:     email,
+		Password:  "password123",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
 
-	t.Run("GetByEmail", func(t *testing.T) {
-		// Arrange
-		testDB.Exec("TRUNCATE TABLE users RESTART IDENTITY CASCADE")
-		email := "email@example.com"
-		user := &model.User{
-			Username:  "emailtest",
-			Email:     email,
-			Password:  "password123",
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-		}
+	err := repo.CreateUser(user)
+	require.NoError(t, err)
 
-		err := repo.CreateUser(user)
-		require.NoError(t, err)
+	// Act
+	retrievedUser, err := repo.GetByUsername(ctx, username)
 
-		// Act
-		retrievedUser, err := repo.GetByEmail(ctx, email)
+	// Assert
+	assert.NoError(t, err)
+	assert.NotNil(t, retrievedUser)
+	assert.Equal(t, user.ID, retrievedUser.ID)
+	assert.Equal(t, username, retrievedUser.Username)
+}
 
-		// Assert
-		assert.NoError(t, err)
-		assert.NotNil(t, retrievedUser)
-		assert.Equal(t, user.ID, retrievedUser.ID)
-		assert.Equal(t, email, retrievedUser.Email)
-	})
+func TestUserRepository_GetByEmail(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
 
-	t.Run("UpdateUser", func(t *testing.T) {
-		// Arrange
-		testDB.Exec("TRUNCATE TABLE users RESTART IDENTITY CASCADE")
-		user := &model.User{
-			Username:  "updatetest",
-			Email:     "update@example.com",
-			Password:  "password123",
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-		}
+	repo := NewUserRepository(tx)
+	username, email := generateUniqueUserData("get-email", 1)
 
-		err := repo.CreateUser(user)
-		require.NoError(t, err)
+	user := &model.User{
+		Username:  username,
+		Email:     email,
+		Password:  "password123",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
 
-		// Act - Update the user
-		updatedEmail := "updated@example.com"
-		user.Email = updatedEmail
-		err = repo.UpdateUser(user)
+	err := repo.CreateUser(user)
+	require.NoError(t, err)
 
-		// Assert
-		assert.NoError(t, err)
+	// Act
+	retrievedUser, err := repo.GetByEmail(ctx, email)
 
-		// Verify the update
-		updatedUser, err := repo.GetByID(ctx, user.ID)
-		assert.NoError(t, err)
-		assert.Equal(t, updatedEmail, updatedUser.Email)
-	})
+	// Assert
+	assert.NoError(t, err)
+	assert.NotNil(t, retrievedUser)
+	assert.Equal(t, user.ID, retrievedUser.ID)
+	assert.Equal(t, email, retrievedUser.Email)
+}
 
-	t.Run("DeleteUser", func(t *testing.T) {
-		// Arrange
-		testDB.Exec("TRUNCATE TABLE users RESTART IDENTITY CASCADE")
-		user := &model.User{
-			Username:  "deletetest",
-			Email:     "delete@example.com",
-			Password:  "password123",
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-		}
+func TestUserRepository_UpdateUser(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
 
-		err := repo.CreateUser(user)
-		require.NoError(t, err)
+	repo := NewUserRepository(tx)
+	username, email := generateUniqueUserData("update", 1)
 
-		// Act
-		err = repo.DeleteUser(user.ID)
+	user := &model.User{
+		Username:  username,
+		Email:     email,
+		Password:  "password123",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
 
-		// Assert
-		assert.NoError(t, err)
+	err := repo.CreateUser(user)
+	require.NoError(t, err)
 
-		// Verify it's deleted
-		_, err = repo.GetByID(ctx, user.ID)
-		assert.Error(t, err)
-		assert.True(t, errors.Is(err, errors.ErrUserNotFound))
-	})
+	// Act - Update the user
+	updatedEmail := fmt.Sprintf("updated-%s", email)
+	user.Email = updatedEmail
+	err = repo.UpdateUser(user)
 
-	t.Run("GetByID_NotFound", func(t *testing.T) {
-		// Act
-		_, err := repo.GetByID(ctx, 9999) // Un ID que no debería existir
+	// Assert
+	assert.NoError(t, err)
 
-		// Assert
-		assert.Error(t, err)
-		assert.True(t, errors.Is(err, errors.ErrUserNotFound))
-	})
+	// Verify the update
+	updatedUser, err := repo.GetByID(ctx, user.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, updatedEmail, updatedUser.Email)
+}
 
-	t.Run("GetByUsername_NotFound", func(t *testing.T) {
-		// Act
-		_, err := repo.GetByUsername(ctx, "nonexistentuser")
+func TestUserRepository_DeleteUser(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
 
-		// Assert
-		assert.Error(t, err)
-		assert.True(t, errors.Is(err, errors.ErrUserNotFound))
-	})
+	repo := NewUserRepository(tx)
+	username, email := generateUniqueUserData("delete", 1)
 
-	t.Run("GetByEmail_NotFound", func(t *testing.T) {
-		// Act
-		_, err := repo.GetByEmail(ctx, "nonexistent@example.com")
+	user := &model.User{
+		Username:  username,
+		Email:     email,
+		Password:  "password123",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
 
-		// Assert
-		assert.Error(t, err)
-		assert.True(t, errors.Is(err, errors.ErrUserNotFound))
-	})
+	err := repo.CreateUser(user)
+	require.NoError(t, err)
+
+	// Act
+	err = repo.DeleteUser(user.ID)
+
+	// Assert
+	assert.NoError(t, err)
+
+	// Verify it's deleted
+	_, err = repo.GetByID(ctx, user.ID)
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, errors.ErrUserNotFound))
+}
+
+func TestUserRepository_GetByID_NotFound(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
+
+	repo := NewUserRepository(tx)
+
+	// Act
+	_, err := repo.GetByID(ctx, 9999) // Un ID que no debería existir
+
+	// Assert
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, errors.ErrUserNotFound))
+}
+
+func TestUserRepository_GetByUsername_NotFound(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
+
+	repo := NewUserRepository(tx)
+
+	// Act
+	_, err := repo.GetByUsername(ctx, "nonexistentuser")
+
+	// Assert
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, errors.ErrUserNotFound))
+}
+
+func TestUserRepository_GetByEmail_NotFound(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
+
+	repo := NewUserRepository(tx)
+
+	// Act
+	_, err := repo.GetByEmail(ctx, "nonexistent@example.com")
+
+	// Assert
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, errors.ErrUserNotFound))
 }

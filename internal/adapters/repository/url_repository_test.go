@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"testing"
@@ -90,185 +91,222 @@ func TestMain(m *testing.M) {
 	os.Exit(exitCode)
 }
 
-func TestURLRepository_Integration(t *testing.T) {
-	// Limpiar la tabla antes de cada prueba
-	testDB.Exec("TRUNCATE TABLE urls RESTART IDENTITY")
+// setupTest crea una nueva transacción para aislar cada test
+func setupTest(t *testing.T) (*gorm.DB, context.Context, func()) {
+	// Iniciar una transacción para aislar este test
+	tx := testDB.Begin()
+	require.NoError(t, tx.Error)
 
 	ctx := context.Background()
-	repo := NewURLRepository(testDB)
 
-	t.Run("Create and GetByShortCode", func(t *testing.T) {
-		// Arrange
-		url := &model.URL{
-			OriginalURL: "https://www.example.com",
-			ShortCode:   "test123",
-			Visits:      0,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-		}
+	// Función de cleanup que hace rollback de la transacción
+	cleanup := func() {
+		tx.Rollback()
+	}
 
-		// Act
-		err := repo.Create(ctx, url)
-		assert.NoError(t, err)
+	return tx, ctx, cleanup
+}
 
-		// Retrieve the URL by short code
-		retrievedURL, err := repo.GetByShortCode(ctx, url.ShortCode)
+// generateUniqueData genera datos únicos para cada test
+func generateUniqueData(testName string, index int) (string, string) {
+	timestamp := time.Now().UnixNano()
+	shortCode := fmt.Sprintf("t%s%d", testName[:1], timestamp%1000000000)[:10]
+	originalURL := fmt.Sprintf("https://www.%s-%d.com", testName, index)
+	return shortCode, originalURL
+}
 
-		// Assert
-		assert.NoError(t, err)
-		assert.NotNil(t, retrievedURL)
-		assert.Equal(t, url.OriginalURL, retrievedURL.OriginalURL)
-		assert.Equal(t, url.ShortCode, retrievedURL.ShortCode)
-		assert.Equal(t, url.Visits, retrievedURL.Visits)
-	})
+func TestURLRepository_Create_GetByShortCode(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
 
-	t.Run("GetByOriginalURL", func(t *testing.T) {
-		// Arrange
-		testDB.Exec("TRUNCATE TABLE urls RESTART IDENTITY")
-		originalURL := "https://www.example2.com"
+	repo := NewURLRepository(tx)
+	shortCode, originalURL := generateUniqueData("create-get", 1)
+
+	url := &model.URL{
+		OriginalURL: originalURL,
+		ShortCode:   shortCode,
+		Visits:      0,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	// Act
+	err := repo.Create(ctx, url)
+	assert.NoError(t, err)
+
+	// Retrieve the URL by short code
+	retrievedURL, err := repo.GetByShortCode(ctx, url.ShortCode)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.NotNil(t, retrievedURL)
+	assert.Equal(t, url.OriginalURL, retrievedURL.OriginalURL)
+	assert.Equal(t, url.ShortCode, retrievedURL.ShortCode)
+	assert.Equal(t, url.Visits, retrievedURL.Visits)
+}
+
+func TestURLRepository_GetByOriginalURL(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
+
+	repo := NewURLRepository(tx)
+	shortCode, originalURL := generateUniqueData("get-original", 1)
+
+	url := &model.URL{
+		OriginalURL: originalURL,
+		ShortCode:   shortCode,
+		Visits:      0,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	err := repo.Create(ctx, url)
+	require.NoError(t, err)
+
+	// Act
+	retrievedURL, err := repo.GetByOriginalURL(ctx, originalURL)
+
+	// Assert
+	assert.NoError(t, err)
+	assert.NotNil(t, retrievedURL)
+	assert.Equal(t, url.OriginalURL, retrievedURL.OriginalURL)
+	assert.Equal(t, url.ShortCode, retrievedURL.ShortCode)
+}
+
+func TestURLRepository_IncrementVisits(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
+
+	repo := NewURLRepository(tx)
+	shortCode, originalURL := generateUniqueData("increment", 1)
+
+	url := &model.URL{
+		OriginalURL: originalURL,
+		ShortCode:   shortCode,
+		Visits:      5,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	err := repo.Create(ctx, url)
+	require.NoError(t, err)
+
+	// Act
+	err = repo.IncrementVisits(ctx, url.ShortCode)
+
+	// Assert
+	assert.NoError(t, err)
+
+	// Verify the increment
+	updatedURL, err := repo.GetByShortCode(ctx, url.ShortCode)
+	assert.NoError(t, err)
+	assert.Equal(t, url.Visits+1, updatedURL.Visits)
+}
+
+func TestURLRepository_List(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
+
+	repo := NewURLRepository(tx)
+
+	// Create multiple URLs
+	urls := []*model.URL{}
+	for i := 0; i < 3; i++ {
+		shortCode, originalURL := generateUniqueData("list", i)
 		url := &model.URL{
 			OriginalURL: originalURL,
-			ShortCode:   "test456",
-			Visits:      0,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
+			ShortCode:   shortCode,
+			Visits:      i + 1,
+			CreatedAt:   time.Now().Add(time.Duration(-i) * time.Hour),
+			UpdatedAt:   time.Now().Add(time.Duration(-i) * time.Hour),
 		}
-
 		err := repo.Create(ctx, url)
 		require.NoError(t, err)
+		urls = append(urls, url)
+	}
 
-		// Act
-		retrievedURL, err := repo.GetByOriginalURL(ctx, originalURL)
+	// Act
+	limit := 2
+	offset := 0
+	retrievedURLs, err := repo.List(ctx, limit, offset)
 
-		// Assert
-		assert.NoError(t, err)
-		assert.NotNil(t, retrievedURL)
-		assert.Equal(t, url.OriginalURL, retrievedURL.OriginalURL)
-		assert.Equal(t, url.ShortCode, retrievedURL.ShortCode)
-	})
+	// Assert
+	assert.NoError(t, err)
+	assert.Len(t, retrievedURLs, limit)
 
-	t.Run("IncrementVisits", func(t *testing.T) {
-		// Arrange
-		testDB.Exec("TRUNCATE TABLE urls RESTART IDENTITY")
-		url := &model.URL{
-			OriginalURL: "https://www.example3.com",
-			ShortCode:   "test789",
-			Visits:      5,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-		}
+	// El orden es descendente por fecha de creación
+	assert.Equal(t, urls[0].ShortCode, retrievedURLs[0].ShortCode)
+	assert.Equal(t, urls[1].ShortCode, retrievedURLs[1].ShortCode)
 
-		err := repo.Create(ctx, url)
-		require.NoError(t, err)
+	// Prueba paginación
+	offset = 2
+	retrievedURLs, err = repo.List(ctx, limit, offset)
+	assert.NoError(t, err)
+	assert.Len(t, retrievedURLs, 1)
+	assert.Equal(t, urls[2].ShortCode, retrievedURLs[0].ShortCode)
+}
 
-		// Act
-		err = repo.IncrementVisits(ctx, url.ShortCode)
+func TestURLRepository_Delete(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
 
-		// Assert
-		assert.NoError(t, err)
+	repo := NewURLRepository(tx)
+	shortCode, originalURL := generateUniqueData("delete", 1)
 
-		// Verify the increment
-		updatedURL, err := repo.GetByShortCode(ctx, url.ShortCode)
-		assert.NoError(t, err)
-		assert.Equal(t, url.Visits+1, updatedURL.Visits)
-	})
+	url := &model.URL{
+		OriginalURL: originalURL,
+		ShortCode:   shortCode,
+		Visits:      0,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
 
-	t.Run("List", func(t *testing.T) {
-		// Arrange
-		testDB.Exec("TRUNCATE TABLE urls RESTART IDENTITY")
+	err := repo.Create(ctx, url)
+	require.NoError(t, err)
 
-		// Create multiple URLs
-		urls := []*model.URL{
-			{
-				OriginalURL: "https://www.example1.com",
-				ShortCode:   "list1",
-				Visits:      1,
-				CreatedAt:   time.Now().Add(-2 * time.Hour),
-				UpdatedAt:   time.Now().Add(-2 * time.Hour),
-			},
-			{
-				OriginalURL: "https://www.example2.com",
-				ShortCode:   "list2",
-				Visits:      2,
-				CreatedAt:   time.Now().Add(-1 * time.Hour),
-				UpdatedAt:   time.Now().Add(-1 * time.Hour),
-			},
-			{
-				OriginalURL: "https://www.example3.com",
-				ShortCode:   "list3",
-				Visits:      3,
-				CreatedAt:   time.Now(),
-				UpdatedAt:   time.Now(),
-			},
-		}
+	// Act
+	err = repo.Delete(ctx, url.ShortCode)
 
-		for _, u := range urls {
-			err := repo.Create(ctx, u)
-			require.NoError(t, err)
-		}
+	// Assert
+	assert.NoError(t, err)
 
-		// Act
-		limit := 2
-		offset := 0
-		retrievedURLs, err := repo.List(ctx, limit, offset)
+	// Verify it's deleted
+	_, err = repo.GetByShortCode(ctx, url.ShortCode)
+	assert.Error(t, err)
+	assert.Equal(t, errors.ErrURLNotFound, err)
+}
 
-		// Assert
-		assert.NoError(t, err)
-		assert.Len(t, retrievedURLs, limit)
+func TestURLRepository_GetByShortCode_NotFound(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
 
-		// El orden es descendente por fecha de creación
-		assert.Equal(t, "list3", retrievedURLs[0].ShortCode)
-		assert.Equal(t, "list2", retrievedURLs[1].ShortCode)
+	repo := NewURLRepository(tx)
 
-		// Prueba paginación
-		offset = 2
-		retrievedURLs, err = repo.List(ctx, limit, offset)
-		assert.NoError(t, err)
-		assert.Len(t, retrievedURLs, 1)
-		assert.Equal(t, "list1", retrievedURLs[0].ShortCode)
-	})
+	// Act
+	_, err := repo.GetByShortCode(ctx, "nonexistent")
 
-	t.Run("Delete", func(t *testing.T) {
-		// Arrange
-		testDB.Exec("TRUNCATE TABLE urls RESTART IDENTITY")
-		url := &model.URL{
-			OriginalURL: "https://www.example-delete.com",
-			ShortCode:   "deltest",
-			Visits:      0,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-		}
+	// Assert
+	assert.Error(t, err)
+	assert.Equal(t, errors.ErrURLNotFound, err)
+}
 
-		err := repo.Create(ctx, url)
-		require.NoError(t, err)
+func TestURLRepository_Delete_NotFound(t *testing.T) {
+	// Arrange
+	tx, ctx, cleanup := setupTest(t)
+	defer cleanup()
 
-		// Act
-		err = repo.Delete(ctx, url.ShortCode)
+	repo := NewURLRepository(tx)
 
-		// Assert
-		assert.NoError(t, err)
+	// Act
+	err := repo.Delete(ctx, "nonexistent")
 
-		// Verify it's deleted
-		_, err = repo.GetByShortCode(ctx, url.ShortCode)
-		assert.Error(t, err)
-		assert.Equal(t, errors.ErrURLNotFound, err)
-	})
-
-	t.Run("GetByShortCode_NotFound", func(t *testing.T) {
-		// Act
-		_, err := repo.GetByShortCode(ctx, "nonexistent")
-
-		// Assert
-		assert.Error(t, err)
-		assert.Equal(t, errors.ErrURLNotFound, err)
-	})
-
-	t.Run("Delete_NotFound", func(t *testing.T) {
-		// Act
-		err := repo.Delete(ctx, "nonexistent")
-
-		// Assert
-		assert.Error(t, err)
-		assert.Equal(t, errors.ErrURLNotFound, err)
-	})
+	// Assert
+	assert.Error(t, err)
+	assert.Equal(t, errors.ErrURLNotFound, err)
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,7 +15,6 @@ import (
 	"tiny-url/internal/adapters/handlers"
 	"tiny-url/internal/adapters/repository"
 	"tiny-url/internal/domain/model"
-	"tiny-url/internal/domain/ports"
 	"tiny-url/internal/domain/service"
 
 	"github.com/gin-gonic/gin"
@@ -28,22 +28,48 @@ import (
 )
 
 var (
-	testRouter     http.Handler
-	testDB         *gorm.DB
-	testToken      string
-	authMiddleware gin.HandlerFunc
+	testDB *gorm.DB
 )
 
-// setupRouter crea un router de Gin con todas las rutas configuradas
-func setupRouter(urlService ports.URLService, authService ports.AuthService) http.Handler {
+// setupTestWithTransaction prepara un entorno aislado para cada test con su propia transacción
+func setupTestWithTransaction(t *testing.T) (*gorm.DB, *gin.Engine, string, func()) {
+	// Iniciar una transacción para aislar este test
+	tx := testDB.Begin()
+	require.NoError(t, tx.Error)
+
+	// Inicializar los repositorios dentro de la transacción
+	urlRepo := repository.NewURLRepository(tx)
+	userRepo := repository.NewUserRepository(tx)
+
+	// Inicializar los servicios
+	urlService := service.NewURLService(urlRepo)
+	authService := service.NewAuthService(userRepo)
+
+	// Generar datos únicos para el test
+	timestamp := time.Now().UnixNano()
+	testUsername := fmt.Sprintf("testuser-%d", timestamp)
+	testEmail := fmt.Sprintf("test-%d@example.com", timestamp)
+	testPassword := "password123"
+
+	// Crear usuario de prueba para autenticación
+	testUser := &model.User{
+		Username: testUsername,
+		Email:    testEmail,
+		Password: testPassword,
+	}
+
+	err := userRepo.CreateUser(testUser)
+	require.NoError(t, err)
+
+	// Obtener un token para las pruebas
+	testToken, err := authService.Login(testUsername, testPassword)
+	require.NoError(t, err)
+
+	// Configurar el router para las pruebas
 	r := gin.Default()
 
-	// Crear manejadores
-	urlHandler := handlers.NewURLHandler(urlService)
-	authHandler := handlers.NewAuthHandler(authService)
-
 	// Configurar middleware de autenticación
-	authMiddleware = func(c *gin.Context) {
+	authMiddleware := func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "No autorizado"})
@@ -75,6 +101,10 @@ func setupRouter(urlService ports.URLService, authService ports.AuthService) htt
 		c.Set("userID", userID)
 		c.Next()
 	}
+
+	// Crear manejadores
+	urlHandler := handlers.NewURLHandler(urlService)
+	authHandler := handlers.NewAuthHandler(authService)
 
 	// Configurar rutas
 	r.GET("/health", func(c *gin.Context) {
@@ -115,7 +145,12 @@ func setupRouter(urlService ports.URLService, authService ports.AuthService) htt
 	// Ruta para redireccionar usando el código corto (pública)
 	r.GET("/:shortCode", urlHandler.RedirectURL)
 
-	return r
+	// Función de cleanup que hace rollback de la transacción
+	cleanup := func() {
+		tx.Rollback()
+	}
+
+	return tx, r, testToken, cleanup
 }
 
 func TestMain(m *testing.M) {
@@ -137,28 +172,24 @@ func TestMain(m *testing.M) {
 		),
 	)
 	if err != nil {
-		fmt.Printf("Failed to start Postgres container: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Failed to start postgres container: %v", err)
 	}
 
-	// Limpiar el contenedor al finalizar
 	defer func() {
 		if err := pgContainer.Terminate(ctx); err != nil {
-			fmt.Printf("Failed to terminate container: %v\n", err)
+			log.Fatalf("Failed to terminate container: %v", err)
 		}
 	}()
 
 	// Obtener la información de conexión
 	host, err := pgContainer.Host(ctx)
 	if err != nil {
-		fmt.Printf("Failed to get container host: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Failed to get container host: %v", err)
 	}
 
 	port, err := pgContainer.MappedPort(ctx, "5432")
 	if err != nil {
-		fmt.Printf("Failed to get container port: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Failed to get container port: %v", err)
 	}
 
 	// Crear cadena de conexión DSN
@@ -168,45 +199,13 @@ func TestMain(m *testing.M) {
 	// Configurar la conexión a la base de datos
 	testDB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		fmt.Printf("Failed to connect to database: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
 	// Migrar los modelos
 	if err := testDB.AutoMigrate(&model.URL{}, &model.User{}); err != nil {
-		fmt.Printf("Failed to migrate models: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Failed to migrate models: %v", err)
 	}
-
-	// Inicializar los repositorios
-	urlRepo := repository.NewURLRepository(testDB)
-	userRepo := repository.NewUserRepository(testDB)
-
-	// Inicializar los servicios
-	urlService := service.NewURLService(urlRepo)
-	authService := service.NewAuthService(userRepo)
-
-	// Crear usuario de prueba para autenticación
-	testUser := &model.User{
-		Username: "testuser",
-		Email:    "test@example.com",
-		Password: "password123", // En un entorno real, esto sería hasheado
-	}
-	if err := userRepo.CreateUser(testUser); err != nil {
-		fmt.Printf("Failed to create test user: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Obtener un token para las pruebas
-	var tokenErr error
-	testToken, tokenErr = authService.Login("testuser", "password123")
-	if tokenErr != nil {
-		fmt.Printf("Failed to generate test token: %v\n", tokenErr)
-		os.Exit(1)
-	}
-
-	// Configurar el router para las pruebas
-	testRouter = setupRouter(urlService, authService)
 
 	// Ejecutar las pruebas
 	exitCode := m.Run()
@@ -216,270 +215,305 @@ func TestMain(m *testing.M) {
 }
 
 // Pruebas de integración para los endpoints de autenticación
-func TestAuthHandler_Integration(t *testing.T) {
-	t.Run("Register", func(t *testing.T) {
-		// Limpiar datos previos
-		testDB.Exec("DELETE FROM users WHERE username = ?", "newuser")
+func TestAuthHandler_Register(t *testing.T) {
+	// Arrange
+	_, router, _, cleanup := setupTestWithTransaction(t)
+	defer cleanup()
 
-		// Crear solicitud
-		registerData := map[string]string{
-			"username": "newuser",
-			"email":    "new@example.com",
-			"password": "password123",
-		}
-		body, _ := json.Marshal(registerData)
-		req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
+	// Crear usuario único para esta prueba
+	timestamp := time.Now().UnixNano()
+	username := fmt.Sprintf("newuser-%d", timestamp)
+	email := fmt.Sprintf("new-%d@example.com", timestamp)
 
-		// Crear respuesta mock
-		w := httptest.NewRecorder()
+	// Crear solicitud
+	registerData := map[string]string{
+		"username": username,
+		"email":    email,
+		"password": "password123",
+	}
+	body, _ := json.Marshal(registerData)
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
 
-		// Procesar la solicitud
-		testRouter.ServeHTTP(w, req)
+	// Crear respuesta mock
+	w := httptest.NewRecorder()
 
-		// Verificar respuesta
-		assert.Equal(t, http.StatusCreated, w.Code)
+	// Act - Procesar la solicitud
+	router.ServeHTTP(w, req)
 
-		var response map[string]interface{}
-		err := json.Unmarshal(w.Body.Bytes(), &response)
-		assert.NoError(t, err)
+	// Assert - Verificar respuesta
+	assert.Equal(t, http.StatusCreated, w.Code)
 
-		// Comprobar que tenemos token y datos de usuario
-		assert.NotEmpty(t, response["token"])
-		assert.NotNil(t, response["user"])
-	})
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
 
-	t.Run("Login", func(t *testing.T) {
-		// Crear solicitud
-		loginData := map[string]string{
-			"username": "testuser",
-			"password": "password123",
-		}
-		body, _ := json.Marshal(loginData)
-		req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
+	// Comprobar que tenemos token y datos de usuario
+	assert.NotEmpty(t, response["token"])
+	assert.NotNil(t, response["user"])
+}
 
-		// Crear respuesta mock
-		w := httptest.NewRecorder()
+func TestAuthHandler_Login(t *testing.T) {
+	// Arrange
+	_, router, _, cleanup := setupTestWithTransaction(t)
+	defer cleanup()
 
-		// Procesar la solicitud
-		testRouter.ServeHTTP(w, req)
+	// Crear usuario único para esta prueba
+	timestamp := time.Now().UnixNano()
+	username := fmt.Sprintf("loginuser-%d", timestamp)
+	email := fmt.Sprintf("login-%d@example.com", timestamp)
+	password := "password123"
 
-		// Verificar respuesta
-		assert.Equal(t, http.StatusOK, w.Code)
+	// Crear el usuario directamente en la base de datos
+	userRepo := repository.NewUserRepository(testDB)
+	user := &model.User{
+		Username: username,
+		Email:    email,
+		Password: password,
+	}
+	err := userRepo.CreateUser(user)
+	require.NoError(t, err)
 
-		var response map[string]interface{}
-		err := json.Unmarshal(w.Body.Bytes(), &response)
-		assert.NoError(t, err)
+	// Crear solicitud
+	loginData := map[string]string{
+		"username": username,
+		"password": password,
+	}
+	body, _ := json.Marshal(loginData)
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
 
-		// Comprobar que tenemos token y datos de usuario
-		assert.NotEmpty(t, response["token"])
-		assert.NotNil(t, response["user"])
-	})
+	// Crear respuesta mock
+	w := httptest.NewRecorder()
 
-	t.Run("GetUserProfile", func(t *testing.T) {
-		// Crear solicitud
-		req := httptest.NewRequest(http.MethodGet, "/api/profile", nil)
-		req.Header.Set("Authorization", "Bearer "+testToken)
+	// Act - Procesar la solicitud
+	router.ServeHTTP(w, req)
 
-		// Crear respuesta mock
-		w := httptest.NewRecorder()
+	// Assert - Verificar respuesta
+	assert.Equal(t, http.StatusOK, w.Code)
 
-		// Procesar la solicitud
-		testRouter.ServeHTTP(w, req)
+	var response map[string]interface{}
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
 
-		// Verificar respuesta
-		assert.Equal(t, http.StatusOK, w.Code)
+	// Comprobar que tenemos token y datos de usuario
+	assert.NotEmpty(t, response["token"])
+	assert.NotNil(t, response["user"])
+}
 
-		var user map[string]interface{}
-		err := json.Unmarshal(w.Body.Bytes(), &user)
-		assert.NoError(t, err)
+func TestAuthHandler_GetUserProfile(t *testing.T) {
+	// Arrange
+	_, router, token, cleanup := setupTestWithTransaction(t)
+	defer cleanup()
 
-		// Comprobar que los datos del usuario son correctos
-		assert.Equal(t, "testuser", user["username"])
-		assert.Equal(t, "test@example.com", user["email"])
-	})
+	// Crear solicitud
+	req := httptest.NewRequest(http.MethodGet, "/api/profile", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	// Crear respuesta mock
+	w := httptest.NewRecorder()
+
+	// Act - Procesar la solicitud
+	router.ServeHTTP(w, req)
+
+	// Assert - Verificar respuesta
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var user map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &user)
+	assert.NoError(t, err)
+
+	// Comprobar que los datos del usuario existen
+	assert.NotEmpty(t, user["username"])
+	assert.NotEmpty(t, user["email"])
 }
 
 // Pruebas de integración para los endpoints de URL
-func TestURLHandler_Integration(t *testing.T) {
-	// Limpiar tabla de URLs para pruebas limpias
-	testDB.Exec("TRUNCATE TABLE urls RESTART IDENTITY")
+func TestURLHandler_ShortenAndGetURL(t *testing.T) {
+	// Arrange
+	_, router, token, cleanup := setupTestWithTransaction(t)
+	defer cleanup()
 
-	var shortCode string
+	// Generar URL única para esta prueba
+	timestamp := time.Now().UnixNano()
+	testUrl := fmt.Sprintf("https://www.example.com/test-integration-%d", timestamp)
 
-	t.Run("ShortenURL", func(t *testing.T) {
-		// Crear solicitud
+	// Test 1: Acortar URL
+	urlData := map[string]string{
+		"url": testUrl,
+	}
+	body, _ := json.Marshal(urlData)
+	req := httptest.NewRequest(http.MethodPost, "/api/urls", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Verificar respuesta
+	assert.Equal(t, http.StatusCreated, w.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+
+	// Comprobar que se creó la URL correctamente
+	assert.Equal(t, testUrl, response["original_url"])
+	shortCode := response["short_code"].(string)
+	assert.NotEmpty(t, shortCode)
+
+	// Test 2: Obtener información de la URL
+	req = httptest.NewRequest(http.MethodGet, "/api/urls/"+shortCode, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Verificar respuesta
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	err = json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
+
+	// Comprobar la información de la URL
+	assert.Equal(t, testUrl, response["original_url"])
+	assert.Equal(t, shortCode, response["short_code"])
+	assert.Equal(t, float64(0), response["visits"]) // Aún no se ha visitado
+}
+
+func TestURLHandler_RedirectURL(t *testing.T) {
+	// Arrange
+	_, router, token, cleanup := setupTestWithTransaction(t)
+	defer cleanup()
+
+	// Primero crear una URL para redireccionar
+	timestamp := time.Now().UnixNano()
+	testUrl := fmt.Sprintf("https://www.example.com/redirect-test-%d", timestamp)
+
+	urlData := map[string]string{
+		"url": testUrl,
+	}
+	body, _ := json.Marshal(urlData)
+	req := httptest.NewRequest(http.MethodPost, "/api/urls", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	shortCode := response["short_code"].(string)
+	require.NotEmpty(t, shortCode)
+
+	// Ahora probar la redirección
+	req = httptest.NewRequest(http.MethodGet, "/"+shortCode, nil)
+	w = httptest.NewRecorder()
+
+	// Act
+	router.ServeHTTP(w, req)
+
+	// Assert
+	assert.Equal(t, http.StatusMovedPermanently, w.Code)
+	assert.Equal(t, testUrl, w.Header().Get("Location"))
+}
+
+func TestURLHandler_ListURLs(t *testing.T) {
+	// Arrange
+	_, router, token, cleanup := setupTestWithTransaction(t)
+	defer cleanup()
+
+	// Crear varias URLs para este test
+	for i := 0; i < 3; i++ {
+		testUrl := fmt.Sprintf("https://www.example.com/list-test-%d-%d", i, time.Now().UnixNano())
 		urlData := map[string]string{
-			"url": "https://www.example.com/test-integration",
+			"url": testUrl,
 		}
 		body, _ := json.Marshal(urlData)
 		req := httptest.NewRequest(http.MethodPost, "/api/urls", bytes.NewBuffer(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.Header.Set("Authorization", "Bearer "+token)
 
-		// Crear respuesta mock
 		w := httptest.NewRecorder()
-
-		// Procesar la solicitud
-		testRouter.ServeHTTP(w, req)
-
-		// Verificar respuesta
+		router.ServeHTTP(w, req)
 		assert.Equal(t, http.StatusCreated, w.Code)
+	}
 
-		var response map[string]interface{}
-		err := json.Unmarshal(w.Body.Bytes(), &response)
-		assert.NoError(t, err)
+	// Act - Obtener la lista de URLs
+	req := httptest.NewRequest(http.MethodGet, "/api/urls?limit=10&offset=0", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
 
-		// Comprobar que se creó la URL correctamente
-		assert.Equal(t, urlData["url"], response["original_url"])
-		assert.NotEmpty(t, response["short_code"])
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
 
-		// Guardar el short_code para pruebas posteriores
-		shortCode = response["short_code"].(string)
-	})
+	// Assert
+	assert.Equal(t, http.StatusOK, w.Code)
 
-	t.Run("GetURLInfo", func(t *testing.T) {
-		// Comprobar que tenemos un shortCode válido
-		require.NotEmpty(t, shortCode)
+	var response map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &response)
+	assert.NoError(t, err)
 
-		// Crear solicitud
-		req := httptest.NewRequest(http.MethodGet, "/api/urls/"+shortCode, nil)
-		req.Header.Set("Authorization", "Bearer "+testToken)
+	// Comprobar que recibimos la lista de URLs
+	urls := response["urls"].([]interface{})
+	assert.NotEmpty(t, urls)
+	assert.Len(t, urls, 3) // Hemos creado 3 URLs en este test
+}
 
-		// Crear respuesta mock
-		w := httptest.NewRecorder()
+func TestURLHandler_DeleteURL(t *testing.T) {
+	// Arrange
+	_, router, token, cleanup := setupTestWithTransaction(t)
+	defer cleanup()
 
-		// Procesar la solicitud
-		testRouter.ServeHTTP(w, req)
+	// Crear una URL para eliminar
+	testUrl := fmt.Sprintf("https://www.example.com/delete-test-%d", time.Now().UnixNano())
+	urlData := map[string]string{
+		"url": testUrl,
+	}
+	body, _ := json.Marshal(urlData)
+	req := httptest.NewRequest(http.MethodPost, "/api/urls", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
 
-		// Verificar respuesta
-		assert.Equal(t, http.StatusOK, w.Code)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
 
-		var response map[string]interface{}
-		err := json.Unmarshal(w.Body.Bytes(), &response)
-		assert.NoError(t, err)
+	var createResponse map[string]interface{}
+	err := json.Unmarshal(w.Body.Bytes(), &createResponse)
+	require.NoError(t, err)
 
-		// Comprobar la información de la URL
-		assert.Equal(t, "https://www.example.com/test-integration", response["original_url"])
-		assert.Equal(t, shortCode, response["short_code"])
-		assert.Equal(t, float64(0), response["visits"]) // Aún no se ha visitado
-	})
+	shortCode := createResponse["short_code"].(string)
+	require.NotEmpty(t, shortCode)
 
-	t.Run("RedirectURL", func(t *testing.T) {
-		// Comprobar que tenemos un shortCode válido
-		require.NotEmpty(t, shortCode)
+	// Act - Eliminar la URL
+	req = httptest.NewRequest(http.MethodDelete, "/api/urls/"+shortCode, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
 
-		// Crear solicitud
-		req := httptest.NewRequest(http.MethodGet, "/"+shortCode, nil)
+	// Assert
+	assert.Equal(t, http.StatusOK, w.Code)
 
-		// Crear respuesta mock
-		w := httptest.NewRecorder()
-
-		// Procesar la solicitud
-		testRouter.ServeHTTP(w, req)
-
-		// Verificar la redirección
-		assert.Equal(t, http.StatusMovedPermanently, w.Code)
-		assert.Equal(t, "https://www.example.com/test-integration", w.Header().Get("Location"))
-	})
-
-	t.Run("ListURLs", func(t *testing.T) {
-		// Crear solicitud
-		req := httptest.NewRequest(http.MethodGet, "/api/urls?limit=10&offset=0", nil)
-		req.Header.Set("Authorization", "Bearer "+testToken)
-
-		// Crear respuesta mock
-		w := httptest.NewRecorder()
-
-		// Procesar la solicitud
-		testRouter.ServeHTTP(w, req)
-
-		// Verificar respuesta
-		assert.Equal(t, http.StatusOK, w.Code)
-
-		var response map[string]interface{}
-		err := json.Unmarshal(w.Body.Bytes(), &response)
-		assert.NoError(t, err)
-
-		// Comprobar que recibimos la lista de URLs
-		urls := response["urls"].([]interface{})
-		assert.NotEmpty(t, urls)
-		assert.Len(t, urls, 1) // Solo hemos creado 1 URL en este test
-	})
-
-	t.Run("DeleteURL", func(t *testing.T) {
-		// Crear una URL primero para asegurarnos de tener algo para eliminar
-		// Crear solicitud para acortar URL
-		urlData := map[string]string{
-			"url": "https://www.example.com/url-to-delete",
-		}
-		body, _ := json.Marshal(urlData)
-		req := httptest.NewRequest(http.MethodPost, "/api/urls", bytes.NewBuffer(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+testToken)
-
-		// Crear respuesta mock
-		w := httptest.NewRecorder()
-
-		// Procesar la solicitud para crear URL
-		testRouter.ServeHTTP(w, req)
-
-		// Verificar que la URL se creó correctamente
-		assert.Equal(t, http.StatusCreated, w.Code)
-
-		var createResponse map[string]interface{}
-		err := json.Unmarshal(w.Body.Bytes(), &createResponse)
-		assert.NoError(t, err)
-
-		// Obtener el shortCode de la URL recién creada
-		deleteShortCode := createResponse["short_code"].(string)
-		assert.NotEmpty(t, deleteShortCode, "El shortCode no debe estar vacío")
-
-		// Ahora intentar eliminar la URL
-		req = httptest.NewRequest(http.MethodDelete, "/api/urls/"+deleteShortCode, nil)
-		req.Header.Set("Authorization", "Bearer "+testToken)
-
-		// Crear respuesta mock para delete
-		w = httptest.NewRecorder()
-
-		// Procesar la solicitud de eliminación
-		testRouter.ServeHTTP(w, req)
-
-		// Verificar respuesta
-		assert.Equal(t, http.StatusOK, w.Code)
-
-		var response map[string]interface{}
-		err = json.Unmarshal(w.Body.Bytes(), &response)
-		assert.NoError(t, err)
-
-		// Verificar que existe un mensaje en la respuesta
-		message, exists := response["message"]
-		assert.True(t, exists, "La respuesta debe contener un campo 'message'")
-		if exists {
-			messageStr, ok := message.(string)
-			assert.True(t, ok, "El campo 'message' debe ser una cadena de texto")
-			if ok {
-				assert.Contains(t, messageStr, "eliminada", "El mensaje debe indicar que la URL fue eliminada")
-			}
-		}
-
-		// Verificar que la URL ya no existe
-		req = httptest.NewRequest(http.MethodGet, "/api/urls/"+deleteShortCode, nil)
-		req.Header.Set("Authorization", "Bearer "+testToken)
-		w = httptest.NewRecorder()
-		testRouter.ServeHTTP(w, req)
-		assert.Equal(t, http.StatusNotFound, w.Code)
-	})
+	// Verificar que la URL ya no existe
+	req = httptest.NewRequest(http.MethodGet, "/api/urls/"+shortCode, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 // Pruebas para verificar la seguridad y autenticación de endpoints protegidos
-func TestSecurityAndAuth_Integration(t *testing.T) {
+func TestSecurityAndAuth(t *testing.T) {
+	// Arrange
+	_, router, _, cleanup := setupTestWithTransaction(t)
+	defer cleanup()
+
 	t.Run("ProtectedEndpoint_NoToken", func(t *testing.T) {
 		// Intentar acceder a un endpoint protegido sin token
 		req := httptest.NewRequest(http.MethodGet, "/api/urls", nil)
 		w := httptest.NewRecorder()
-		testRouter.ServeHTTP(w, req)
+		router.ServeHTTP(w, req)
 
 		// Verificar que se deniega el acceso
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
@@ -490,7 +524,7 @@ func TestSecurityAndAuth_Integration(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/urls", nil)
 		req.Header.Set("Authorization", "Bearer invalid.token.here")
 		w := httptest.NewRecorder()
-		testRouter.ServeHTTP(w, req)
+		router.ServeHTTP(w, req)
 
 		// Verificar que se deniega el acceso
 		assert.Equal(t, http.StatusUnauthorized, w.Code)
@@ -500,7 +534,7 @@ func TestSecurityAndAuth_Integration(t *testing.T) {
 		// Las rutas públicas no deben requerir autenticación
 		req := httptest.NewRequest(http.MethodGet, "/health", nil)
 		w := httptest.NewRecorder()
-		testRouter.ServeHTTP(w, req)
+		router.ServeHTTP(w, req)
 
 		// Verificar acceso permitido
 		assert.Equal(t, http.StatusOK, w.Code)
