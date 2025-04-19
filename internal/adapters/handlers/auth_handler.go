@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"tiny-url/internal/domain/errors"
+	"tiny-url/internal/domain/model"
 	"tiny-url/internal/domain/ports"
 )
 
@@ -40,6 +41,45 @@ type AuthResponse struct {
 	Token string      `json:"token" example:"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."`
 }
 
+// handleAuthError centraliza el manejo de errores comunes en los handlers de autenticación
+func (h *AuthHandler) handleAuthError(c *gin.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Errores específicos de autenticación
+	if errors.Is(err, errors.ErrUserAlreadyExists) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "El usuario o email ya existe",
+		})
+		return true
+	}
+
+	if errors.Is(err, errors.ErrInvalidCredentials) || errors.Is(err, errors.ErrUserNotFound) {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "Credenciales inválidas",
+		})
+		return true
+	}
+
+	// Error genérico del servidor
+	c.JSON(http.StatusInternalServerError, gin.H{
+		"error": "Error del servidor",
+	})
+	return true
+}
+
+// createAuthResponse genera una respuesta de autenticación estandarizada
+func (h *AuthHandler) createAuthResponse(c *gin.Context, user *model.User, token string, statusCode int) {
+	// Ocultar la contraseña en la respuesta
+	user.Password = ""
+
+	c.JSON(statusCode, gin.H{
+		"user":  user,
+		"token": token,
+	})
+}
+
 // Register godoc
 // @Summary Registrar un nuevo usuario
 // @Description Crea un nuevo usuario en el sistema y devuelve un token de autenticación
@@ -61,26 +101,11 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	}
 
 	user, token, err := h.authService.Register(c.Request.Context(), request.Username, request.Email, request.Password)
-	if err != nil {
-		if errors.Is(err, errors.ErrUserAlreadyExists) {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "El usuario o email ya existe",
-			})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error al registrar usuario",
-		})
+	if h.handleAuthError(c, err) {
 		return
 	}
 
-	// Ocultar la contraseña en la respuesta
-	user.Password = ""
-
-	c.JSON(http.StatusCreated, gin.H{
-		"user":  user,
-		"token": token,
-	})
+	h.createAuthResponse(c, user, token, http.StatusCreated)
 }
 
 // Login godoc
@@ -106,43 +131,22 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	token, err := h.authService.Login(creds.Username, creds.Password)
-	if err != nil {
-		if errors.Is(err, errors.ErrInvalidCredentials) || errors.Is(err, errors.ErrUserNotFound) {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Credenciales inválidas",
-			})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error al iniciar sesión",
-		})
+	if h.handleAuthError(c, err) {
 		return
 	}
 
 	// Obtener los datos del usuario a partir del token
 	userID, err := h.authService.ValidateToken(token)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error al obtener información del usuario",
-		})
+	if h.handleAuthError(c, err) {
 		return
 	}
 
 	user, err := h.authService.GetUser(c.Request.Context(), userID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error al obtener información del usuario",
-		})
+	if h.handleAuthError(c, err) {
 		return
 	}
 
-	// Ocultar la contraseña en la respuesta
-	user.Password = ""
-
-	c.JSON(http.StatusOK, gin.H{
-		"user":  user,
-		"token": token,
-	})
+	h.createAuthResponse(c, user, token, http.StatusOK)
 }
 
 // GetUserProfile godoc
@@ -168,16 +172,7 @@ func (h *AuthHandler) GetUserProfile(c *gin.Context) {
 
 	// Obtener información del usuario
 	user, err := h.authService.GetUser(c.Request.Context(), userID.(uint))
-	if err != nil {
-		if errors.Is(err, errors.ErrUserNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Usuario no encontrado",
-			})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error al obtener el perfil de usuario",
-		})
+	if h.handleAuthError(c, err) {
 		return
 	}
 

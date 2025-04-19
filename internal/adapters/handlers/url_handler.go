@@ -35,6 +35,43 @@ type URLResponse struct {
 	Visits      int    `json:"visits" example:"5"`
 }
 
+// handleError maneja los errores comunes de forma centralizada
+func (h *URLHandler) handleError(c *gin.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, errors.ErrInvalidURL) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "URL inválida",
+		})
+		return true
+	}
+
+	if errors.Is(err, errors.ErrURLNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "URL no encontrada",
+		})
+		return true
+	}
+
+	// Error genérico del servidor
+	c.JSON(http.StatusInternalServerError, gin.H{
+		"error": "Error del servidor",
+	})
+	return true
+}
+
+// buildShortURL construye la URL completa a partir del código corto
+func (h *URLHandler) buildShortURL(c *gin.Context, shortCode string) string {
+	baseURL := c.Request.Host
+	scheme := "http"
+	if c.Request.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + baseURL + "/" + shortCode
+}
+
 // ShortenURL godoc
 // @Summary Acortar una URL
 // @Description Crea una versión acortada de una URL proporcionada
@@ -59,26 +96,11 @@ func (h *URLHandler) ShortenURL(c *gin.Context) {
 	}
 
 	url, err := h.urlService.ShortenURL(c.Request.Context(), request.URL)
-	if err != nil {
-		if errors.Is(err, errors.ErrInvalidURL) {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "URL inválida",
-			})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error al acortar la URL",
-		})
+	if h.handleError(c, err) {
 		return
 	}
 
-	// Construir la URL acortada completa
-	baseURL := c.Request.Host
-	scheme := "http"
-	if c.Request.TLS != nil {
-		scheme = "https"
-	}
-	shortURL := scheme + "://" + baseURL + "/" + url.ShortCode
+	shortURL := h.buildShortURL(c, url.ShortCode)
 
 	c.JSON(http.StatusCreated, gin.H{
 		"original_url": url.OriginalURL,
@@ -101,16 +123,7 @@ func (h *URLHandler) ShortenURL(c *gin.Context) {
 func (h *URLHandler) RedirectURL(c *gin.Context) {
 	shortCode := c.Param("shortCode")
 	originalURL, err := h.urlService.RedirectURL(c.Request.Context(), shortCode)
-	if err != nil {
-		if errors.Is(err, errors.ErrURLNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "URL no encontrada",
-			})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error al redirigir",
-		})
+	if h.handleError(c, err) {
 		return
 	}
 
@@ -132,16 +145,7 @@ func (h *URLHandler) RedirectURL(c *gin.Context) {
 func (h *URLHandler) GetURLInfo(c *gin.Context) {
 	shortCode := c.Param("shortCode")
 	url, err := h.urlService.GetURL(c.Request.Context(), shortCode)
-	if err != nil {
-		if errors.Is(err, errors.ErrURLNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "URL no encontrada",
-			})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error al obtener información de la URL",
-		})
+	if h.handleError(c, err) {
 		return
 	}
 
@@ -180,10 +184,7 @@ func (h *URLHandler) ListURLs(c *gin.Context) {
 	}
 
 	urls, err := h.urlService.ListURLs(c.Request.Context(), limit, offset)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error al listar URLs",
-		})
+	if h.handleError(c, err) {
 		return
 	}
 
@@ -209,16 +210,7 @@ func (h *URLHandler) ListURLs(c *gin.Context) {
 func (h *URLHandler) DeleteURL(c *gin.Context) {
 	shortCode := c.Param("shortCode")
 	err := h.urlService.DeleteURL(c.Request.Context(), shortCode)
-	if err != nil {
-		if errors.Is(err, errors.ErrURLNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "URL no encontrada",
-			})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Error al eliminar la URL",
-		})
+	if h.handleError(c, err) {
 		return
 	}
 
