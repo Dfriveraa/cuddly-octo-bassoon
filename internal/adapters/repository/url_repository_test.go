@@ -30,8 +30,8 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 
 	// Configurar el contenedor de PostgreSQL
-	pgContainer, err := pg_container.RunContainer(ctx,
-		testcontainers.WithImage("postgres:14-alpine"),
+	pgContainer, err := pg_container.Run(ctx,
+		"postgres:14-alpine",
 		pg_container.WithDatabase("testdb"),
 		pg_container.WithUsername("testuser"),
 		pg_container.WithPassword("testpass"),
