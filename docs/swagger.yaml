@@ -1,0 +1,385 @@
+definitions:
+  handlers.AuthResponse:
+    properties:
+      token:
+        example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        type: string
+      user: {}
+    type: object
+  handlers.RegisterRequest:
+    properties:
+      email:
+        example: usuario@ejemplo.com
+        type: string
+      password:
+        example: contraseña123
+        minLength: 6
+        type: string
+      username:
+        example: usuario123
+        type: string
+    required:
+    - email
+    - password
+    - username
+    type: object
+  handlers.ShortenURLRequest:
+    properties:
+      url:
+        example: https://www.ejemplo.com/pagina-con-url-muy-larga
+        type: string
+    required:
+    - url
+    type: object
+  handlers.URLResponse:
+    properties:
+      original_url:
+        example: https://www.ejemplo.com/pagina-con-url-muy-larga
+        type: string
+      short_code:
+        example: abc123
+        type: string
+      short_url:
+        example: http://localhost:8080/abc123
+        type: string
+      visits:
+        example: 5
+        type: integer
+    type: object
+  handlers.UserCredentials:
+    properties:
+      password:
+        example: contraseña123
+        type: string
+      username:
+        example: usuario123
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  model.User:
+    properties:
+      created_at:
+        type: string
+      email:
+        type: string
+      id:
+        type: integer
+      updated_at:
+        type: string
+      username:
+        type: string
+    type: object
+info:
+  contact:
+    email: support@swagger.io
+    name: API Support
+    url: http://www.swagger.io/support
+  description: This is a sample server cellear server.
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: Swagger Example API
+  version: "1.0"
+paths:
+  /{shortCode}:
+    get:
+      description: Redirige al usuario a la URL original correspondiente al código
+        corto
+      parameters:
+      - description: Código corto de la URL
+        in: path
+        name: shortCode
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "301":
+          description: Redirección a la URL original
+        "404":
+          description: URL no encontrada
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Error del servidor
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Redirigir a la URL original
+      tags:
+      - redirection
+  /api/profile:
+    get:
+      consumes:
+      - application/json
+      description: Obtiene el perfil del usuario autenticado
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Perfil del usuario
+          schema:
+            $ref: '#/definitions/model.User'
+        "401":
+          description: No autenticado
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Error del servidor
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Obtener perfil de usuario
+      tags:
+      - auth
+  /api/urls:
+    get:
+      description: Obtiene una lista paginada de todas las URLs acortadas
+      parameters:
+      - description: 'Límite de resultados por página (default: 10)'
+        in: query
+        name: limit
+        type: integer
+      - description: 'Desplazamiento para paginación (default: 0)'
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Lista de URLs
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: No autorizado
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Error del servidor
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Listar todas las URLs
+      tags:
+      - urls
+    post:
+      consumes:
+      - application/json
+      description: Crea una versión acortada de una URL proporcionada
+      parameters:
+      - description: URL a acortar
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.ShortenURLRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: URL acortada exitosamente
+          schema:
+            $ref: '#/definitions/handlers.URLResponse'
+        "400":
+          description: URL inválida
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: No autorizado
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Error del servidor
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Acortar una URL
+      tags:
+      - urls
+  /api/urls/{shortCode}:
+    delete:
+      description: Elimina una URL acortada por su código corto
+      parameters:
+      - description: Código corto de la URL
+        in: path
+        name: shortCode
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: URL eliminada correctamente
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: No autorizado
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: URL no encontrada
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Error del servidor
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Eliminar una URL
+      tags:
+      - urls
+    get:
+      description: Obtiene información detallada sobre una URL acortada
+      parameters:
+      - description: Código corto de la URL
+        in: path
+        name: shortCode
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Información de la URL
+          schema:
+            $ref: '#/definitions/handlers.URLResponse'
+        "401":
+          description: No autorizado
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: URL no encontrada
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Error del servidor
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Obtener información de una URL
+      tags:
+      - urls
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Autentica a un usuario y devuelve un token JWT
+      parameters:
+      - description: Credenciales de usuario
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.UserCredentials'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Inicio de sesión exitoso
+          schema:
+            $ref: '#/definitions/handlers.AuthResponse'
+        "400":
+          description: Credenciales inválidas
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: No autorizado
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Error del servidor
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Iniciar sesión
+      tags:
+      - auth
+  /auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Crea un nuevo usuario en el sistema y devuelve un token de autenticación
+      parameters:
+      - description: Datos de registro del usuario
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Usuario creado correctamente
+          schema:
+            $ref: '#/definitions/handlers.AuthResponse'
+        "400":
+          description: Error en la solicitud
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Error del servidor
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Registrar un nuevo usuario
+      tags:
+      - auth
+securityDefinitions:
+  OPasswordAuth:
+    description: JWT Token created by username and password
+    flow: password
+    tokenUrl: /auth/login
+    type: oauth2
+swagger: "2.0"

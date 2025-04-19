@@ -1,0 +1,11 @@
+all: true
+template: testify
+packages:
+  tiny-url/internal/domain/ports:
+    config:
+      dir: ./internal/domain/ports/mocks/
+      structname: '{{.Mock}}{{.InterfaceName}}'
+      pkgname: mocks
+      recursive: true
+      filename: "{{.InterfaceName | snakecase}}.go"
+      force-file-write: true
